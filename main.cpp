@@ -9,7 +9,6 @@
  *   - 'q' to quit 
  *   - log requests
  *   - ok to have newline on contents? (good for readability in BIG files, but not completely accurate)
- *   - strange character appearing at the end of chunks in BIG files
  *   - read port and directory from arguments (note: directory should NOT end with '/')
  *
  **/
@@ -194,7 +193,7 @@ int main(int argc, char **argv) {
 		    while (true) {
 			memset(resp,0,sizeof(resp));
 			memset(filebuf,0,sizeof(filebuf));
-			if (fread((void*)filebuf, 1, FILE_BUF_LEN, file) == 0) {
+			if (fread((void*)filebuf, 1, FILE_BUF_LEN-1, file) == 0) {
 			    break;
 			}
 
@@ -207,6 +206,7 @@ int main(int argc, char **argv) {
 			// file is empty, nothing was sent, send a blank response
 			SEND_RESP_OK("")
 		    }
+		    fclose(file);
 		    printf("READ FILE\n");
 		} else {
 		    SEND_RESP_NOTFOUND
