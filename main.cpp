@@ -3,10 +3,7 @@
  *
  * TODO
  *   - comments
- *   - responds with date and content-type ??
- *   - http method/httpv case insensitive
  *   - check HTTP/1.0\
- *   - 'q' to quit 
  *   - log requests
  *   - ok to have newline on contents? (good for readability in BIG files, but not completely accurate)
  *   - read port and directory from arguments (note: directory should NOT end with '/')
@@ -23,11 +20,15 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <sys/stat.h>
+#include <time.h>
+#include <ctype.h>
 
 #define BACKLOG      1    // how many clients may be backlogged
 #define BUF_LEN      1024 // size of buffer
 #define FILE_BUF_LEN 512  // max buffer for file reads
 #define WORD_LEN     128  // size of single word from buffer
+#define TIME_BUF_LEN 128  // size of time buffer
+#define STDIN        0    // STD Input Filedescriptor
 
 // response definitions
 #define RESP_HTTPV "HTTP/1.0"
@@ -37,13 +38,19 @@
 #define RESP_BADREQUEST_PHRASE "Bad Request"
 #define RESP_NOTFOUND_CODE 404
 #define RESP_NOTFOUND_PHRASE "Not Found"
+#define RESP_CONTENTTYPE "text/html; charset=UTF-8"
 
 
-#define SEND_RESP_BADREQUEST resplen = sprintf(resp,"%s, %d, %s\n\n",RESP_HTTPV,RESP_BADREQUEST_CODE,RESP_BADREQUEST_PHRASE); send(clientfd, resp, resplen, 0);
+#define GET_TIME_LOG time(&rawtime); timeinfo=localtime(&rawtime); strftime(buf_time, TIME_BUF_LEN, "%Y %b %d %H:%M:%S", timeinfo);
+#define GET_TIME_RESPONSE time(&rawtime); timeinfo=localtime(&rawtime); strftime(buf_time, TIME_BUF_LEN, "%a, %d %b %Y %H:%M:%S %Z", timeinfo);
 
-#define SEND_RESP_NOTFOUND resplen = sprintf(resp,"%s, %d, %s\n\n",RESP_HTTPV,RESP_NOTFOUND_CODE,RESP_NOTFOUND_PHRASE); send(clientfd, resp, resplen, 0);
+#define SEND_RESP_BADREQUEST GET_TIME_RESPONSE resplen = sprintf(resp,"%s, %d, %s\nDate: %s\nContent-Type: %s\n\n",RESP_HTTPV,RESP_BADREQUEST_CODE,RESP_BADREQUEST_PHRASE,buf_time,RESP_CONTENTTYPE); send(clientfd, resp, resplen, 0);
 
-#define SEND_RESP_OK(FILECONTENTS) resplen = sprintf(resp,"%s, %d, %s\n\n%s\n",RESP_HTTPV,RESP_OK_CODE,RESP_OK_PHRASE,FILECONTENTS); send(clientfd, resp, resplen, 0);
+#define SEND_RESP_NOTFOUND GET_TIME_RESPONSE resplen = sprintf(resp,"%s, %d, %s\nDate: %s\nContent-Type: %s\n\n",RESP_HTTPV,RESP_NOTFOUND_CODE,RESP_NOTFOUND_PHRASE,buf_time,RESP_CONTENTTYPE); send(clientfd, resp, resplen, 0);
+
+#define SEND_RESP_OK(FILECONTENTS) GET_TIME_RESPONSE resplen = sprintf(resp,"%s, %d, %s\nDate: %s\nContent-Type: %s\n\n%s",RESP_HTTPV,RESP_OK_CODE,RESP_OK_PHRASE,buf_time,RESP_CONTENTTYPE,FILECONTENTS); send(clientfd, resp, resplen, 0);
+
+#define SEND_CHUNK(FILECONTENTS) resplen = sprintf(resp,"%s",FILECONTENTS); send(clientfd, resp, resplen, 0);
 
 using namespace std;
 
@@ -63,6 +70,12 @@ int main(int argc, char **argv) {
     int reqdirlen, resplen, filebuflen;
     struct stat st_buf;
     FILE *file = NULL;
+    int listener; // listening socket descriptor
+    fd_set master; // master selector
+    char buf_input[BUF_LEN]; // buffer for std input
+    time_t rawtime;
+    struct tm *timeinfo;
+    char buf_time[TIME_BUF_LEN]; // time buffer
 
     // setup our address details
     memset(&hints, 0, sizeof hints);
@@ -106,7 +119,8 @@ int main(int argc, char **argv) {
 
     
     // listen for client
-    if (listen(sockfd, BACKLOG) == -1) {
+    listener=listen(sockfd, BACKLOG);
+    if (listener == -1) {
 	printf("Error in listening for client\n");
 	return -1;
     }
@@ -122,7 +136,35 @@ int main(int argc, char **argv) {
 	memset(requri, 0, WORD_LEN);
 	memset(httpv, 0, WORD_LEN);
 	memset(reqdir, 0, WORD_LEN);
-	clientfd = accept(sockfd, (struct sockaddr *)&clientaddr, &sin_size);
+	memset(buf_input, 0, BUF_LEN);
+
+	// selecting stuff
+	FD_ZERO(&master);
+	FD_SET(sockfd, &master);
+	FD_SET(STDIN, &master);
+
+	if (select(sockfd+1, &master, NULL, NULL, NULL) == -1) {
+		printf("Error selecting stuff\n");
+		return -1;
+	}
+
+	if (FD_ISSET(STDIN, &master)) {
+		// input was read
+		printf("INPUT WAS READ!!\n");
+		scanf("%s",buf_input);
+		if (strcmp(buf_input, "q")==0) {
+			printf("quit server..\n");
+			return -1;
+		}
+		continue;
+	} else if (FD_ISSET(sockfd, &master)) {
+		// found client
+		printf("Found client ??\n");
+		clientfd = accept(sockfd, (struct sockaddr *)&clientaddr, &sin_size);
+	} else {
+		printf("something weird just happened..\n");
+	}
+	
 	if (clientfd == -1) {
 	    printf("Error accepting client\n");
 	    continue;
@@ -133,6 +175,22 @@ int main(int argc, char **argv) {
 
 	    // read request from user
 	    sscanf(buf,"%s %s %s",method,requri,httpv);
+
+	    // set method and httpv to uppercase
+	    int i=0;
+	    char c;
+	    while (method[i]) {
+		c=method[i];
+		if (islower(c)) method[i]=toupper(c);
+		i++;
+	    }
+	    i=0;
+	    while (httpv[i]) {
+		c=httpv[i];
+		if (islower(c)) httpv[i]=toupper(c);
+		i++;
+	    }
+	    i=0;
 
 	    // parse input
 	    if (strcmp(method,"GET")==0) {
@@ -198,7 +256,11 @@ int main(int argc, char **argv) {
 			}
 
 			// send current file buffer contents
-			SEND_RESP_OK(filebuf)
+			if (hasSent) {
+				SEND_CHUNK(filebuf)
+			} else {
+				SEND_RESP_OK(filebuf)
+			}
 			hasSent = true;
 			printf("READING FILE\n");
 		    }

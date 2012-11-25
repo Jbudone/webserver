@@ -1,0 +1,11 @@
+1. GET /index.html HTTP/1.0  # 200 ok
+2. GET / HTTP/1.0   # corret response
+3. GET /gnu/main.html HTTP/1.0   # 200 ok
+4. GET /nofile HTTP/1.0  # 404 not found
+5. GET /gnu/nofile HTTP/1.0  # 404 not found
+6. get / http/1.0  # 200 ok
+7. GET /Index.html HTTP/1.0  # 404 not found
+8. GET http.request HTTP/1.0  # 400 bad request
+9. GET /index.html HTTP/1.1 # 400 bad reqeust
+10. GET /gnu/ HTTP/1.0  #404 not found
+11. got / http/1.0  #400 bad request
