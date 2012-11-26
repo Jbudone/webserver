@@ -2,9 +2,8 @@
  * webserver
  *
  * TODO
- *   - comments
- *   - check HTTP/1.0\
- *   - newline from buffer being read into log
+ *   - remove debug messages
+ *   - check HTTP/1.0\  (check that newline isn't an issue in comparison)
  *   - read port and directory from arguments (note: directory should NOT end with '/')
  *
  **/
@@ -203,6 +202,15 @@ int main(int argc, char **argv) {
 	    while (httpv[i]) {
 		c=httpv[i];
 		if (islower(c)) httpv[i]=toupper(c);
+		if (c=='\r' || c=='\n') httpv[i]='\0';
+		i++;
+	    }
+	    i=0;
+
+	    // remove newline from buffer (so that they're not displayed in log)
+	    while (buf[i]) {
+		c=buf[i];
+		if (c=='\r' || c=='\n') buf[i]='\0';
 		i++;
 	    }
 	    i=0;
