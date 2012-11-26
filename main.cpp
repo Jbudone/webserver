@@ -4,8 +4,7 @@
  * TODO
  *   - comments
  *   - check HTTP/1.0\
- *   - log requests
- *   - ok to have newline on contents? (good for readability in BIG files, but not completely accurate)
+ *   - newline from buffer being read into log
  *   - read port and directory from arguments (note: directory should NOT end with '/')
  *
  **/
@@ -23,12 +22,14 @@
 #include <time.h>
 #include <ctype.h>
 
-#define BACKLOG      1    // how many clients may be backlogged
-#define BUF_LEN      1024 // size of buffer
-#define FILE_BUF_LEN 512  // max buffer for file reads
-#define WORD_LEN     128  // size of single word from buffer
-#define TIME_BUF_LEN 128  // size of time buffer
-#define STDIN        0    // STD Input Filedescriptor
+#define BACKLOG      1     // how many clients may be backlogged
+#define BUF_LEN      1024  // size of buffer
+#define FILE_BUF_LEN 512   // max buffer for file reads
+#define WORD_LEN     128   // size of single word from buffer
+#define TIME_BUF_LEN 128   // size of time buffer
+#define STDIN        0     // STD Input Filedescriptor
+#define LOGFILE_NAME "log" // name of logfile
+#define PATH_BUF_LEN 512   // max size of path buffer
 
 // response definitions
 #define RESP_HTTPV "HTTP/1.0"
@@ -44,11 +45,14 @@
 #define GET_TIME_LOG time(&rawtime); timeinfo=localtime(&rawtime); strftime(buf_time, TIME_BUF_LEN, "%Y %b %d %H:%M:%S", timeinfo);
 #define GET_TIME_RESPONSE time(&rawtime); timeinfo=localtime(&rawtime); strftime(buf_time, TIME_BUF_LEN, "%a, %d %b %Y %H:%M:%S %Z", timeinfo);
 
-#define SEND_RESP_BADREQUEST GET_TIME_RESPONSE resplen = sprintf(resp,"%s, %d, %s\nDate: %s\nContent-Type: %s\n\n",RESP_HTTPV,RESP_BADREQUEST_CODE,RESP_BADREQUEST_PHRASE,buf_time,RESP_CONTENTTYPE); send(clientfd, resp, resplen, 0);
+#define APPEND_LOG(REQUEST_LINE, RESPONSE_CODE, RESPONSE_PHRASE) GET_TIME_LOG fprintf(logfile, "%d %s %s:%d %s; HTTP/1.0 %d %s\n",(log_seq++), buf_time, buf_client_ip, buf_client_port, REQUEST_LINE, RESPONSE_CODE, RESPONSE_PHRASE);
+#define APPEND_LOG_OK(REQUEST_LINE, RESPONSE_CODE, RESPONSE_PHRASE, RESPONSE_FILE) GET_TIME_LOG fprintf(logfile, "%d %s %s:%d %s; HTTP/1.0 %d %s; %s\n",(log_seq++), buf_time, buf_client_ip, buf_client_port, REQUEST_LINE, RESPONSE_CODE, RESPONSE_PHRASE, RESPONSE_FILE);
 
-#define SEND_RESP_NOTFOUND GET_TIME_RESPONSE resplen = sprintf(resp,"%s, %d, %s\nDate: %s\nContent-Type: %s\n\n",RESP_HTTPV,RESP_NOTFOUND_CODE,RESP_NOTFOUND_PHRASE,buf_time,RESP_CONTENTTYPE); send(clientfd, resp, resplen, 0);
+#define SEND_RESP_BADREQUEST(REQUEST_LINE) GET_TIME_RESPONSE resplen = sprintf(resp,"%s, %d, %s\nDate: %s\nContent-Type: %s\n\n",RESP_HTTPV,RESP_BADREQUEST_CODE,RESP_BADREQUEST_PHRASE,buf_time,RESP_CONTENTTYPE); send(clientfd, resp, resplen, 0); APPEND_LOG(REQUEST_LINE,RESP_BADREQUEST_CODE,RESP_BADREQUEST_PHRASE);
 
-#define SEND_RESP_OK(FILECONTENTS) GET_TIME_RESPONSE resplen = sprintf(resp,"%s, %d, %s\nDate: %s\nContent-Type: %s\n\n%s",RESP_HTTPV,RESP_OK_CODE,RESP_OK_PHRASE,buf_time,RESP_CONTENTTYPE,FILECONTENTS); send(clientfd, resp, resplen, 0);
+#define SEND_RESP_NOTFOUND(REQUEST_LINE) GET_TIME_RESPONSE resplen = sprintf(resp,"%s, %d, %s\nDate: %s\nContent-Type: %s\n\n",RESP_HTTPV,RESP_NOTFOUND_CODE,RESP_NOTFOUND_PHRASE,buf_time,RESP_CONTENTTYPE); send(clientfd, resp, resplen, 0); APPEND_LOG(REQUEST_LINE,RESP_NOTFOUND_CODE,RESP_NOTFOUND_PHRASE);
+
+#define SEND_RESP_OK(REQUEST_LINE, RESPONSE_FILE, FILECONTENTS) GET_TIME_RESPONSE resplen = sprintf(resp,"%s, %d, %s\nDate: %s\nContent-Type: %s\n\n%s",RESP_HTTPV,RESP_OK_CODE,RESP_OK_PHRASE,buf_time,RESP_CONTENTTYPE,FILECONTENTS); send(clientfd, resp, resplen, 0); APPEND_LOG_OK(REQUEST_LINE,RESP_OK_CODE,RESP_OK_PHRASE,RESPONSE_FILE);
 
 #define SEND_CHUNK(FILECONTENTS) resplen = sprintf(resp,"%s",FILECONTENTS); send(clientfd, resp, resplen, 0);
 
@@ -65,17 +69,20 @@ int main(int argc, char **argv) {
     int errno;
     int one = 1;
     char *port, *cwd;
-    char buf[BUF_LEN], resp[BUF_LEN], filebuf[FILE_BUF_LEN];
+    char buf[BUF_LEN], resp[BUF_LEN], filebuf[FILE_BUF_LEN], pathbuf[PATH_BUF_LEN];
     char method[WORD_LEN], requri[WORD_LEN], httpv[WORD_LEN], reqdir[WORD_LEN];
     int reqdirlen, resplen, filebuflen;
     struct stat st_buf;
-    FILE *file = NULL;
+    FILE *file = NULL, *logfile = NULL;
     int listener; // listening socket descriptor
     fd_set master; // master selector
     char buf_input[BUF_LEN]; // buffer for std input
     time_t rawtime;
     struct tm *timeinfo;
     char buf_time[TIME_BUF_LEN]; // time buffer
+    int log_seq=1;
+    char buf_client_ip[INET_ADDRSTRLEN];
+    unsigned int buf_client_port;
 
     // setup our address details
     memset(&hints, 0, sizeof hints);
@@ -87,10 +94,14 @@ int main(int argc, char **argv) {
     port = "3490";
     cwd = "www"; // NOTE: cwd must NOT end with '/' !!!
 
+    // open logfile for logging purposes
+    logfile = fopen(LOGFILE_NAME,"a+");
+
     if ((errno = getaddrinfo(NULL, port, &hints, &servinfo)) != 0) {
 	printf("Error in getaddrinfo: %s\n", gai_strerror(errno));
 	return -1;
     }
+
 
     // try to bind to an available address
     for (res = servinfo; res != NULL; res = res->ai_next) {
@@ -137,6 +148,8 @@ int main(int argc, char **argv) {
 	memset(httpv, 0, WORD_LEN);
 	memset(reqdir, 0, WORD_LEN);
 	memset(buf_input, 0, BUF_LEN);
+	memset(buf_client_ip, 0, INET_ADDRSTRLEN);
+	memset(pathbuf, 0, PATH_BUF_LEN);
 
 	// selecting stuff
 	FD_ZERO(&master);
@@ -154,13 +167,15 @@ int main(int argc, char **argv) {
 		scanf("%s",buf_input);
 		if (strcmp(buf_input, "q")==0) {
 			printf("quit server..\n");
-			return -1;
+			break;
 		}
 		continue;
 	} else if (FD_ISSET(sockfd, &master)) {
 		// found client
 		printf("Found client ??\n");
 		clientfd = accept(sockfd, (struct sockaddr *)&clientaddr, &sin_size);
+		inet_ntop(clientaddr.ss_family, &(((struct sockaddr_in*)&clientaddr)->sin_addr), buf_client_ip, sizeof buf_client_ip);
+		buf_client_port = ((struct sockaddr_in*)&clientaddr)->sin_port;
 	} else {
 		printf("something weird just happened..\n");
 	}
@@ -192,12 +207,13 @@ int main(int argc, char **argv) {
 	    }
 	    i=0;
 
+
 	    // parse input
 	    if (strcmp(method,"GET")==0) {
 
 		// does the uri attempt to go out of directory (../)
 		if (strstr(requri,"..")) {
-		    SEND_RESP_BADREQUEST
+		    SEND_RESP_BADREQUEST(buf)
 		    close(clientfd);
 		    printf("USER attempting to locate outside of cwd\n");
 		    continue;
@@ -213,7 +229,7 @@ int main(int argc, char **argv) {
 
 		if ((errno = stat(reqdir, &st_buf)) != 0) {
 		    // ERROR: could not open file/directory
-		    SEND_RESP_NOTFOUND
+		    SEND_RESP_NOTFOUND(buf)
 		    close(clientfd);
 		    printf("COULD NOT find file\n");
 		    continue;
@@ -231,7 +247,7 @@ int main(int argc, char **argv) {
 
 		    if ((errno = stat(reqdir, &st_buf)) != 0) {
 			// ERROR: could not open file/directory
-			SEND_RESP_NOTFOUND
+			SEND_RESP_NOTFOUND(buf)
 			close(clientfd);
 			printf("COULD NOT find file\n");
 			continue;
@@ -247,6 +263,9 @@ int main(int argc, char **argv) {
 			continue;
 		    }
 
+		    // get absolute path of file
+		    realpath(reqdir, pathbuf);
+
 		    bool hasSent = false;
 		    while (true) {
 			memset(resp,0,sizeof(resp));
@@ -259,19 +278,19 @@ int main(int argc, char **argv) {
 			if (hasSent) {
 				SEND_CHUNK(filebuf)
 			} else {
-				SEND_RESP_OK(filebuf)
+				SEND_RESP_OK(buf,pathbuf,filebuf)
 			}
 			hasSent = true;
 			printf("READING FILE\n");
 		    }
 		    if (!hasSent) {
 			// file is empty, nothing was sent, send a blank response
-			SEND_RESP_OK("")
+			SEND_RESP_OK(buf,pathbuf,"")
 		    }
 		    fclose(file);
 		    printf("READ FILE\n");
 		} else {
-		    SEND_RESP_NOTFOUND
+		    SEND_RESP_NOTFOUND(buf)
 		    close(clientfd);
 		    printf("COULD NOT FIND FILE: %s\n",reqdir);
 		    continue;
@@ -281,13 +300,14 @@ int main(int argc, char **argv) {
 		printf("there ya go, user!\n");
 	    } else {
 		// bad request from user
-		SEND_RESP_BADREQUEST
+		SEND_RESP_BADREQUEST(buf)
 	    }
 	}
 
 	close(clientfd);
     }
 
+    fclose(logfile);
     return 0;
 }
 
