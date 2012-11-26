@@ -2,9 +2,7 @@
  * webserver
  *
  * TODO
- *   - remove debug messages
- *   - check HTTP/1.0\  (check that newline isn't an issue in comparison)
- *   - read port and directory from arguments (note: directory should NOT end with '/')
+ *   - 8. GET http.request HTTP/1.0  # 400 bad request
  *
  **/
 
@@ -82,6 +80,8 @@ int main(int argc, char **argv) {
     int log_seq=1;
     char buf_client_ip[INET_ADDRSTRLEN];
     unsigned int buf_client_port;
+    int i;
+    char c;
 
     // setup our address details
     memset(&hints, 0, sizeof hints);
@@ -90,8 +90,24 @@ int main(int argc, char **argv) {
     hints.ai_flags    = AI_PASSIVE;
 
     // get our port and directory
-    port = "3490";
-    cwd = "www"; // NOTE: cwd must NOT end with '/' !!!
+    if (argc <= 2) {
+	printf("usage: ./sws <port> <directory>\n");
+	return -1;
+    }
+    port = argv[1];//"3490"
+    cwd = argv[2];//"www"
+    // NOTE: cwd must NOT end with '/'
+    i=0;
+    while (cwd[i]) {
+	c=cwd[i];
+	i++;
+    }
+    if (c=='/') {
+	// cwd ends with a '/'
+	cwd[i]='.'; // turn into 'xxxxxx/.'
+	cwd[i+1]='\0';
+    }
+
 
     // open logfile for logging purposes
     logfile = fopen(LOGFILE_NAME,"a+");
@@ -135,7 +151,8 @@ int main(int argc, char **argv) {
 	return -1;
     }
 
-    printf("server: waiting for connections....\n");
+    printf("sws is running on TCP port %s and serving %s\n",port,cwd);
+    printf("press ‘q’ to quit ...\n");
 
     while (true) {
 
@@ -162,16 +179,13 @@ int main(int argc, char **argv) {
 
 	if (FD_ISSET(STDIN, &master)) {
 		// input was read
-		printf("INPUT WAS READ!!\n");
 		scanf("%s",buf_input);
 		if (strcmp(buf_input, "q")==0) {
-			printf("quit server..\n");
 			break;
 		}
 		continue;
 	} else if (FD_ISSET(sockfd, &master)) {
 		// found client
-		printf("Found client ??\n");
 		clientfd = accept(sockfd, (struct sockaddr *)&clientaddr, &sin_size);
 		inet_ntop(clientaddr.ss_family, &(((struct sockaddr_in*)&clientaddr)->sin_addr), buf_client_ip, sizeof buf_client_ip);
 		buf_client_port = ((struct sockaddr_in*)&clientaddr)->sin_port;
@@ -185,14 +199,12 @@ int main(int argc, char **argv) {
 	}
 
 	if (recv(clientfd, buf, BUF_LEN, 0)) {
-	    printf("Received: %s", buf);
 
 	    // read request from user
 	    sscanf(buf,"%s %s %s",method,requri,httpv);
 
 	    // set method and httpv to uppercase
-	    int i=0;
-	    char c;
+	    i=0;
 	    while (method[i]) {
 		c=method[i];
 		if (islower(c)) method[i]=toupper(c);
@@ -217,13 +229,13 @@ int main(int argc, char **argv) {
 
 
 	    // parse input
-	    if (strcmp(method,"GET")==0) {
+	    if (strcmp(method,"GET")==0 &&
+		strcmp(httpv,"HTTP/1.0")==0) {
 
 		// does the uri attempt to go out of directory (../)
 		if (strstr(requri,"..")) {
 		    SEND_RESP_BADREQUEST(buf)
 		    close(clientfd);
-		    printf("USER attempting to locate outside of cwd\n");
 		    continue;
 		}
 
@@ -233,13 +245,11 @@ int main(int argc, char **argv) {
 		} else {
 		    reqdirlen = sprintf(reqdir,"%s/%s",cwd,requri);
 		}
-		printf("REQUEST DIR: %s  [%s][%s]\n",reqdir,requri,cwd);
 
 		if ((errno = stat(reqdir, &st_buf)) != 0) {
 		    // ERROR: could not open file/directory
 		    SEND_RESP_NOTFOUND(buf)
 		    close(clientfd);
-		    printf("COULD NOT find file\n");
 		    continue;
 		}
 
@@ -257,7 +267,6 @@ int main(int argc, char **argv) {
 			// ERROR: could not open file/directory
 			SEND_RESP_NOTFOUND(buf)
 			close(clientfd);
-			printf("COULD NOT find file\n");
 			continue;
 		    }
 		}
@@ -266,7 +275,6 @@ int main(int argc, char **argv) {
 		if (S_ISREG(st_buf.st_mode)) {
 		    file = fopen(reqdir,"r");
 		    if (file == NULL) {
-			printf("Error reading file: %s\n",reqdir);
 			close(clientfd);
 			continue;
 		    }
@@ -289,23 +297,19 @@ int main(int argc, char **argv) {
 				SEND_RESP_OK(buf,pathbuf,filebuf)
 			}
 			hasSent = true;
-			printf("READING FILE\n");
 		    }
 		    if (!hasSent) {
 			// file is empty, nothing was sent, send a blank response
 			SEND_RESP_OK(buf,pathbuf,"")
 		    }
 		    fclose(file);
-		    printf("READ FILE\n");
 		} else {
 		    SEND_RESP_NOTFOUND(buf)
 		    close(clientfd);
-		    printf("COULD NOT FIND FILE: %s\n",reqdir);
 		    continue;
 		}
 
 		
-		printf("there ya go, user!\n");
 	    } else {
 		// bad request from user
 		SEND_RESP_BADREQUEST(buf)
