@@ -2,7 +2,7 @@
  * webserver
  *
  * TODO
- *   - 8. GET http.request HTTP/1.0  # 400 bad request
+ *  - rename file, include student numbers + names in header/comments
  *
  **/
 
@@ -243,7 +243,10 @@ int main(int argc, char **argv) {
 		if (requri[0]=='/') {
 		    reqdirlen = sprintf(reqdir,"%s%s",cwd,requri);
 		} else {
-		    reqdirlen = sprintf(reqdir,"%s/%s",cwd,requri);
+		    // request uri MUST begin with '/' otherwise its considered a bad request
+		    SEND_RESP_BADREQUEST(buf)
+		    close(clientfd);
+		    continue;
 		}
 
 		if ((errno = stat(reqdir, &st_buf)) != 0) {
